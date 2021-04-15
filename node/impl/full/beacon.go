@@ -17,6 +17,7 @@ type BeaconAPI struct {
 }
 
 func (a *BeaconAPI) BeaconGetEntry(ctx context.Context, epoch abi.ChainEpoch) (*types.BeaconEntry, error) {
+	// 得到当前最大的epoch的beacon
 	b := a.Beacon.BeaconForEpoch(epoch)
 	rr := b.MaxBeaconRoundForEpoch(epoch)
 	e := b.Entry(ctx, rr)

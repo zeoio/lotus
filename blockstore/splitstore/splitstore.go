@@ -333,6 +333,7 @@ func (s *SplitStore) View(cid cid.Cid, cb func([]byte) error) error {
 }
 
 // State tracking
+// ?
 func (s *SplitStore) Start(chain ChainAccessor) error {
 	s.chain = chain
 	s.curTs = chain.GetHeaviestTipSet()

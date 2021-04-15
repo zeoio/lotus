@@ -80,11 +80,13 @@ func CheckBlockSignature(ctx context.Context, blk *types.BlockHeader, worker add
 		return xerrors.New("block signature not present")
 	}
 
+	// 对block header进行序列化
 	sigb, err := blk.SigningBytes()
 	if err != nil {
 		return xerrors.Errorf("failed to get block signing bytes: %w", err)
 	}
 
+	// 验证签名
 	err = Verify(blk.BlockSig, worker, sigb)
 	if err == nil {
 		blk.SetValidated()

@@ -437,6 +437,7 @@ func MinerGetBaseInfo(ctx context.Context, sm *StateManager, bcs beacon.Schedule
 		return nil, xerrors.Errorf("failed to load tipset for mining base: %w", err)
 	}
 
+	// 查找最新的beacon条目
 	prev, err := sm.ChainStore().GetLatestBeaconEntry(ts)
 	if err != nil {
 		if os.Getenv("LOTUS_IGNORE_DRAND") != "_yes_" {
@@ -446,6 +447,7 @@ func MinerGetBaseInfo(ctx context.Context, sm *StateManager, bcs beacon.Schedule
 		prev = &types.BeaconEntry{}
 	}
 
+	// round 是回合数
 	entries, err := beacon.BeaconEntriesForBlock(ctx, bcs, round, ts.Height(), *prev)
 	if err != nil {
 		return nil, err
@@ -484,6 +486,7 @@ func MinerGetBaseInfo(ctx context.Context, sm *StateManager, bcs beacon.Schedule
 		return nil, xerrors.Errorf("failed to marshal miner address: %w", err)
 	}
 
+	// rbase.Data是随机数
 	prand, err := store.DrawRandomness(rbase.Data, crypto.DomainSeparationTag_WinningPoStChallengeSeed, round, buf.Bytes())
 	if err != nil {
 		return nil, xerrors.Errorf("failed to get randomness for winning post: %w", err)

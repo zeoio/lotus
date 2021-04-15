@@ -28,6 +28,7 @@ func New(dstore ds.Batching) *SlashFilter {
 }
 
 func (f *SlashFilter) MinedBlock(bh *types.BlockHeader, parentEpoch abi.ChainEpoch) error {
+	// 在升级区间内
 	if build.IsNearUpgrade(bh.Height, build.UpgradeOrangeHeight) {
 		return nil
 	}
@@ -35,6 +36,7 @@ func (f *SlashFilter) MinedBlock(bh *types.BlockHeader, parentEpoch abi.ChainEpo
 	epochKey := ds.NewKey(fmt.Sprintf("/%s/%d", bh.Miner, bh.Height))
 	{
 		// double-fork mining (2 blocks at one epoch)
+		// 检查bh是否存在，如果存在是否和这个区块不一致
 		if err := checkFault(f.byEpoch, epochKey, bh, "double-fork mining faults"); err != nil {
 			return err
 		}
@@ -49,6 +51,7 @@ func (f *SlashFilter) MinedBlock(bh *types.BlockHeader, parentEpoch abi.ChainEpo
 	}
 
 	{
+		// 是否在正确的top tipset
 		// parent-grinding fault (didn't mine on top of our own block)
 
 		// First check if we have mined a block on the parent epoch
@@ -94,6 +97,7 @@ func (f *SlashFilter) MinedBlock(bh *types.BlockHeader, parentEpoch abi.ChainEpo
 	return nil
 }
 
+// 检查key是否存在，如果存在判断是否和bh相等
 func checkFault(t ds.Datastore, key ds.Key, bh *types.BlockHeader, faultType string) error {
 	fault, err := t.Has(key)
 	if err != nil {

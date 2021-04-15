@@ -143,6 +143,7 @@ var initCmd = &cli.Command{
 
 		log.Info("Checking proof parameters")
 
+		// 获取证明参数
 		if err := paramfetch.GetParams(ctx, build.ParametersJSON(), uint64(ssize)); err != nil {
 			return xerrors.Errorf("fetching proof parameters: %w", err)
 		}
@@ -157,6 +158,7 @@ var initCmd = &cli.Command{
 
 		log.Info("Checking full node sync status")
 
+		// 等待peer同步完成
 		if !cctx.Bool("genesis-miner") && !cctx.Bool("nosync") {
 			if err := lcli.SyncWait(ctx, api, false); err != nil {
 				return xerrors.Errorf("sync wait: %w", err)

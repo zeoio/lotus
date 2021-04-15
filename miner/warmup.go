@@ -24,6 +24,7 @@ func (m *Miner) winPoStWarmup(ctx context.Context) error {
 
 	var sector abi.SectorNumber = math.MaxUint64
 
+	// 获取第一个partition中扇区的个数
 out:
 	for dlIdx := range deadlines {
 		partitions, err := m.api.StateMinerPartitions(ctx, m.address, uint64(dlIdx), types.EmptyTSK)
@@ -45,6 +46,7 @@ out:
 		}
 	}
 
+	// 没有扇区，直接退出
 	if sector == math.MaxUint64 {
 		log.Info("skipping winning PoSt warmup, no sectors")
 		return nil

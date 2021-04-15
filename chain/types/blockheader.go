@@ -24,12 +24,13 @@ type Ticket struct {
 	VRFProof []byte
 }
 
+// ticket是否很接近1<<256这个值
 func (t *Ticket) Quality() float64 {
 	ticketHash := blake2b.Sum256(t.VRFProof)
 	ticketNum := BigFromBytes(ticketHash[:]).Int
 	ticketDenu := big.NewInt(1)
-	ticketDenu.Lsh(ticketDenu, 256)
-	tv, _ := new(big.Rat).SetFrac(ticketNum, ticketDenu).Float64()
+	ticketDenu.Lsh(ticketDenu, 256)                                // 1 << 256
+	tv, _ := new(big.Rat).SetFrac(ticketNum, ticketDenu).Float64() // num / (1<<256)
 	tq := 1 - tv
 	return tq
 }
@@ -124,6 +125,8 @@ func (blk *BlockHeader) SetValidated() {
 }
 
 func (blk *BlockHeader) IsValidated() bool {
+	// validated字段是否在传递的时候被清除
+	// 如果没有被清除，其他节点是否是直接跳过，不做签名检查?
 	return blk.validated
 }
 
@@ -154,6 +157,7 @@ func (mm *MsgMeta) ToStorageBlock() (block.Block, error) {
 	return block.NewBlockWithCid(buf.Bytes(), c)
 }
 
+// cid数组的内容是否相等
 func CidArrsEqual(a, b []cid.Cid) bool {
 	if len(a) != len(b) {
 		return false

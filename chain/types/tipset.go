@@ -159,6 +159,7 @@ func (ts *TipSet) Blocks() []*BlockHeader {
 	return ts.blks
 }
 
+// 判断两个tipset是否相等
 func (ts *TipSet) Equals(ots *TipSet) bool {
 	if ts == nil && ots == nil {
 		return true
@@ -194,6 +195,7 @@ func (ts *TipSet) MinTicket() *Ticket {
 	return ts.MinTicketBlock().Ticket
 }
 
+// 获取tipset中最小的时间戳
 func (ts *TipSet) MinTimestamp() uint64 {
 	minTs := ts.Blocks()[0].Timestamp
 	for _, bh := range ts.Blocks()[1:] {

@@ -610,6 +610,7 @@ func (wpp *wppProvider) ComputeProof(context.Context, []proof2.SectorInfo, abi.P
 	return ValidWpostForTesting, nil
 }
 
+// brand是随机数条目
 func IsRoundWinner(ctx context.Context, ts *types.TipSet, round abi.ChainEpoch,
 	miner address.Address, brand types.BeaconEntry, mbi *api.MiningBaseInfo, a MiningCheckAPI) (*types.ElectionProof, error) {
 
@@ -618,11 +619,13 @@ func IsRoundWinner(ctx context.Context, ts *types.TipSet, round abi.ChainEpoch,
 		return nil, xerrors.Errorf("failed to cbor marshal address: %w", err)
 	}
 
+	// hash
 	electionRand, err := store.DrawRandomness(brand.Data, crypto.DomainSeparationTag_ElectionProofProduction, round, buf.Bytes())
 	if err != nil {
 		return nil, xerrors.Errorf("failed to draw randomness: %w", err)
 	}
 
+	// 签名
 	vrfout, err := ComputeVRF(ctx, a.WalletSign, mbi.WorkerKey, electionRand)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to compute VRF: %w", err)

@@ -34,6 +34,7 @@ func (fts *FullTipSet) Cids() []cid.Cid {
 
 // TipSet returns a narrower view of this FullTipSet elliding the block
 // messages.
+// 获取完整区块的tipset
 func (fts *FullTipSet) TipSet() *types.TipSet {
 	if fts.tipset != nil {
 		// FIXME: fts.tipset is actually never set. Should it memoize?

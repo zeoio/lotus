@@ -75,6 +75,7 @@ func NewDrandBeacon(genesisTs, interval uint64, ps *pubsub.PubSub, config dtypes
 		panic("what are you doing this cant be zero")
 	}
 
+	// drand的信息
 	drandChain, err := dchain.InfoFromJSON(bytes.NewReader([]byte(config.ChainInfoJSON)))
 	if err != nil {
 		return nil, xerrors.Errorf("unable to unmarshal drand chain info: %w", err)
@@ -83,6 +84,7 @@ func NewDrandBeacon(genesisTs, interval uint64, ps *pubsub.PubSub, config dtypes
 	dlogger := dlog.NewKitLoggerFrom(kzap.NewZapSugarLogger(
 		log.SugaredLogger.Desugar(), zapcore.InfoLevel))
 
+	// 创建drand客户端
 	var clients []dclient.Client
 	for _, url := range config.Servers {
 		hc, err := hclient.NewWithInfo(url, drandChain, nil)
@@ -155,6 +157,7 @@ func (db *DrandBeacon) Entry(ctx context.Context, round uint64) <-chan beacon.Re
 
 	return out
 }
+
 func (db *DrandBeacon) cacheValue(e types.BeaconEntry) {
 	db.cacheLk.Lock()
 	defer db.cacheLk.Unlock()

@@ -584,6 +584,7 @@ func (cs *ChainStore) takeHeaviestTipSet(ctx context.Context, ts *types.TipSet) 
 
 	if err := cs.writeHead(ts); err != nil {
 		log.Errorf("failed to write chain head: %s", err)
+		// return err ?
 		return nil
 	}
 
@@ -781,6 +782,7 @@ func (cs *ChainStore) GetHeaviestTipSet() *types.TipSet {
 	return cs.heaviest
 }
 
+// 将block header添加到tipsets中
 func (cs *ChainStore) AddToTipSetTracker(b *types.BlockHeader) error {
 	cs.tstLk.Lock()
 	defer cs.tstLk.Unlock()
@@ -788,12 +790,14 @@ func (cs *ChainStore) AddToTipSetTracker(b *types.BlockHeader) error {
 	tss := cs.tipsets[b.Height]
 	for _, oc := range tss {
 		if oc == b.Cid() {
+			// 已经存在
 			log.Debug("tried to add block to tipset tracker that was already there")
 			return nil
 		}
 		h, err := cs.GetBlock(oc)
 		if err == nil && h != nil {
 			if h.Miner == b.Miner {
+				// 在这个区块高度，一个miner存在多个区块
 				log.Warnf("Have multiple blocks from miner %s at height %d in our tipset cache %s-%s", b.Miner, b.Height, b.Cid(), h.Cid())
 			}
 		}
@@ -809,6 +813,9 @@ func (cs *ChainStore) AddToTipSetTracker(b *types.BlockHeader) error {
 	// Seems good enough to me
 
 	for height := range cs.tipsets {
+		// 如果tipsets中区块太旧了，就删除它
+		// 默认限度是900
+		// 最多只删除一个
 		if height < b.Height-build.Finality {
 			delete(cs.tipsets, height)
 		}
@@ -820,6 +827,7 @@ func (cs *ChainStore) AddToTipSetTracker(b *types.BlockHeader) error {
 	return nil
 }
 
+// 持久化区块头
 func (cs *ChainStore) PersistBlockHeaders(b ...*types.BlockHeader) error {
 	sbs := make([]block.Block, len(b))
 
@@ -926,12 +934,15 @@ func (cs *ChainStore) AddBlock(ctx context.Context, b *types.BlockHeader) error 
 	return nil
 }
 
+// 获取创世block header
 func (cs *ChainStore) GetGenesis() (*types.BlockHeader, error) {
+	// 获取cid数据
 	data, err := cs.metadataDs.Get(dstore.NewKey("0"))
 	if err != nil {
 		return nil, err
 	}
 
+	// 解析cid
 	c, err := cid.Cast(data)
 	if err != nil {
 		return nil, err
@@ -1091,12 +1102,14 @@ type mmCids struct {
 }
 
 func (cs *ChainStore) ReadMsgMetaCids(mmc cid.Cid) ([]cid.Cid, []cid.Cid, error) {
+	// 从缓存加载消息的cid
 	o, ok := cs.mmCache.Get(mmc)
 	if ok {
 		mmcids := o.(*mmCids)
 		return mmcids.bls, mmcids.secpk, nil
 	}
 
+	// 从本地加载消息的cid
 	cst := cbor.NewCborStore(cs.chainLocalBlockstore)
 	var msgmeta types.MsgMeta
 	if err := cst.Get(context.TODO(), mmc, &msgmeta); err != nil {
@@ -1113,6 +1126,7 @@ func (cs *ChainStore) ReadMsgMetaCids(mmc cid.Cid) ([]cid.Cid, []cid.Cid, error)
 		return nil, nil, xerrors.Errorf("loading secpk message cids for block: %w", err)
 	}
 
+	// 加入到缓存中
 	cs.mmCache.Add(mmc, &mmCids{
 		bls:   blscids,
 		secpk: secpkcids,
@@ -1236,6 +1250,7 @@ func (cs *ChainStore) VMSys() vm.SyscallBuilder {
 	return cs.vmcalls
 }
 
+// 获取包含消息体的tipset
 func (cs *ChainStore) TryFillTipSet(ts *types.TipSet) (*FullTipSet, error) {
 	var out []*types.FullBlock
 
@@ -1258,6 +1273,8 @@ func (cs *ChainStore) TryFillTipSet(ts *types.TipSet) (*FullTipSet, error) {
 	return NewFullTipSet(out), nil
 }
 
+// rbase是随机数, round是当前的tipset高度, entropy是地址
+// 结果是(pers + rbase + round + entrpy)的hash
 func DrawRandomness(rbase []byte, pers crypto.DomainSeparationTag, round abi.ChainEpoch, entropy []byte) ([]byte, error) {
 	h := blake2b.New256()
 	if err := binary.Write(h, binary.BigEndian, int64(pers)); err != nil {
@@ -1567,11 +1584,13 @@ func (cs *ChainStore) Import(r io.Reader) (*types.TipSet, error) {
 	return root, nil
 }
 
+// 查找最近20个tipset的beacon条目
 func (cs *ChainStore) GetLatestBeaconEntry(ts *types.TipSet) (*types.BeaconEntry, error) {
 	cur := ts
 	for i := 0; i < 20; i++ {
 		cbe := cur.Blocks()[0].BeaconEntries
 		if len(cbe) > 0 {
+			// 如果条目的个数不为0, 则返回最后一个条目
 			return &cbe[len(cbe)-1], nil
 		}
 
@@ -1615,6 +1634,7 @@ func (cr *chainRand) GetBeaconRandomness(ctx context.Context, pers crypto.Domain
 	return cr.cs.GetBeaconRandomness(ctx, cr.blks, pers, round, entropy)
 }
 
+// 获得指定的tipset, 如果key是空的，则获取当前权重最大的tipset
 func (cs *ChainStore) GetTipSetFromKey(tsk types.TipSetKey) (*types.TipSet, error) {
 	if tsk.IsEmpty() {
 		return cs.GetHeaviestTipSet(), nil

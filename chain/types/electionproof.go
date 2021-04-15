@@ -195,6 +195,7 @@ func (ep *ElectionProof) ComputeWinCount(power BigInt, totalPower BigInt) int64 
 
 	p, rhs := newPoiss(lam)
 
+	// MaxWinCount = 15
 	var j int64
 	for lhs.Cmp(rhs) < 0 && j < MaxWinCount {
 		rhs = p.next()

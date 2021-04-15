@@ -226,39 +226,48 @@ func (syncer *Syncer) InformNewHead(from peer.ID, fts *store.FullTipSet) bool {
 		}
 	}()
 
+	// ctx创建太早了
 	ctx := context.Background()
+
 	if fts == nil {
 		log.Errorf("got nil tipset in InformNewHead")
 		return false
 	}
 
 	if syncer.IsEpochBeyondCurrMax(fts.TipSet().Height()) {
+		// 如果block的高度是大于真实的高度
 		log.Errorf("Received block with impossibly large height %d", fts.TipSet().Height())
 		return false
 	}
 
 	for _, b := range fts.Blocks {
+		// 是否是无效的block
 		if reason, ok := syncer.bad.Has(b.Cid()); ok {
 			log.Warnf("InformNewHead called on block marked as bad: %s (reason: %s)", b.Cid(), reason)
 			return false
 		}
+		// 验证消息并持久化
 		if err := syncer.ValidateMsgMeta(b); err != nil {
 			log.Warnf("invalid block received: %s", err)
 			return false
 		}
 	}
 
+	// 将这个block推送到"incoming"通道中
 	syncer.incoming.Pub(fts.TipSet().Blocks(), LocalIncoming)
 
 	// TODO: IMPORTANT(GARBAGE) this needs to be put in the 'temporary' side of
 	// the blockstore
+	// 持久化block header
 	if err := syncer.store.PersistBlockHeaders(fts.TipSet().Blocks()...); err != nil {
 		log.Warn("failed to persist incoming block header: ", err)
 		return false
 	}
 
+	// 将peer添加到pool中
 	syncer.Exchange.AddPeer(from)
 
+	// 判断接受到的blocks的权重是否大于现在的区块链权重, 如果小于则忽略
 	hts := syncer.store.GetHeaviestTipSet()
 	bestPweight := hts.ParentWeight()
 	targetWeight := fts.TipSet().ParentWeight()
@@ -311,6 +320,7 @@ func (syncer *Syncer) IncomingBlocks(ctx context.Context) (<-chan *types.BlockHe
 // messages within this block. If validation passes, it stores the messages in
 // the underlying IPLD block store.
 func (syncer *Syncer) ValidateMsgMeta(fblk *types.FullBlock) error {
+	// block是否包含了太多的消息, > 10000
 	if msgc := len(fblk.BlsMessages) + len(fblk.SecpkMessages); msgc > build.BlockMessageLimit {
 		return xerrors.Errorf("block %s has too many messages (%d)", fblk.Header.Cid(), msgc)
 	}
@@ -343,17 +353,20 @@ func (syncer *Syncer) ValidateMsgMeta(fblk *types.FullBlock) error {
 	}
 
 	// Compute the root CID of the combined message trie.
+	// 计算block消息的root
 	smroot, err := computeMsgMeta(cst, bcids, scids)
 	if err != nil {
 		return xerrors.Errorf("validating msgmeta, compute failed: %w", err)
 	}
 
 	// Check that the message trie root matches with what's in the block.
+	// block消息是否一致
 	if fblk.Header.Messages != smroot {
 		return xerrors.Errorf("messages in full block did not match msgmeta root in header (%s != %s)", fblk.Header.Messages, smroot)
 	}
 
 	// Finally, flush.
+	// 持久化 ?
 	return vm.Copy(context.TODO(), blockstore, syncer.store.ChainBlockstore(), smroot)
 }
 
@@ -404,6 +417,7 @@ func copyBlockstore(ctx context.Context, from, to bstore.Blockstore) error {
 // either validate it here, or ensure that its validated elsewhere (maybe make
 // sure the blocksync code checks it?)
 // maybe this code should actually live in blocksync??
+// 检查区块消息的完整性和构建完整的block
 func zipTipSetAndMessages(bs cbor.IpldStore, ts *types.TipSet, allbmsgs []*types.Message, allsmsgs []*types.SignedMessage, bmi, smi [][]uint64) (*store.FullTipSet, error) {
 	if len(ts.Blocks()) != len(smi) || len(ts.Blocks()) != len(bmi) {
 		return nil, fmt.Errorf("msgincl length didnt match tipset size")
@@ -411,6 +425,7 @@ func zipTipSetAndMessages(bs cbor.IpldStore, ts *types.TipSet, allbmsgs []*types
 
 	fts := &store.FullTipSet{}
 	for bi, b := range ts.Blocks() {
+		// block不能有太多的消息， 10000
 		if msgc := len(bmi[bi]) + len(smi[bi]); msgc > build.BlockMessageLimit {
 			return nil, fmt.Errorf("block %q has too many messages (%d)", b.Cid(), msgc)
 		}
@@ -555,9 +570,11 @@ func (syncer *Syncer) Sync(ctx context.Context, maybeHead *types.TipSet) error {
 	hts := syncer.store.GetHeaviestTipSet()
 
 	if hts.ParentWeight().GreaterThan(maybeHead.ParentWeight()) {
+		// 目前的权重大于请求同步的tipset的权重
 		return nil
 	}
 	if syncer.Genesis.Equals(maybeHead) || hts.Equals(maybeHead) {
+		// 如果请求的是创世tipset或者是和本地的相等
 		return nil
 	}
 
@@ -605,6 +622,7 @@ func (syncer *Syncer) ValidateTipSet(ctx context.Context, fts *store.FullTipSet,
 
 	ts := fts.TipSet()
 	if ts.Equals(syncer.Genesis) {
+		// 如果是创世区块
 		return nil
 	}
 
@@ -615,6 +633,7 @@ func (syncer *Syncer) ValidateTipSet(ctx context.Context, fts *store.FullTipSet,
 		futures = append(futures, async.Err(func() error {
 			if err := syncer.ValidateBlock(ctx, b, useCache); err != nil {
 				if isPermanent(err) {
+					// 如果验证block失败，则将它加入到bad列表中
 					syncer.bad.Add(b.Cid(), NewBadBlockReason([]cid.Cid{b.Cid()}, err.Error()))
 				}
 				return xerrors.Errorf("validating block %s: %w", b.Cid(), err)
@@ -737,11 +756,13 @@ func (syncer *Syncer) ValidateBlock(ctx context.Context, b *types.FullBlock, use
 	}
 
 	// fast checks first
+	// 检查block的timestamp是否符合预期
 	nulls := h.Height - (baseTs.Height() + 1)
 	if tgtTs := baseTs.MinTimestamp() + build.BlockDelaySecs*uint64(nulls+1); h.Timestamp != tgtTs {
 		return xerrors.Errorf("block has wrong timestamp: %d != %d", h.Timestamp, tgtTs)
 	}
 
+	// 判断block的timestamp是否是将来的，允许1s的误差
 	now := uint64(build.Clock.Now().Unix())
 	if h.Timestamp > now+build.AllowableClockDriftSecs {
 		return xerrors.Errorf("block was from the future (now=%d, blk=%d): %w", now, h.Timestamp, ErrTemporal)
@@ -1243,6 +1264,8 @@ func extractSyncState(ctx context.Context) *SyncerState {
 //
 // All throughout the process, we keep checking if the received blocks are in
 // the deny list, and short-circuit the process if so.
+// 获取需要同步的block header
+// 返回的区块数组是以区块高度的降序排列的, 第一个元素就是incoming区块
 func (syncer *Syncer) collectHeaders(ctx context.Context, incoming *types.TipSet, known *types.TipSet) ([]*types.TipSet, error) {
 	ctx, span := trace.StartSpan(ctx, "collectHeaders")
 	defer span.End()
@@ -1255,6 +1278,7 @@ func (syncer *Syncer) collectHeaders(ctx context.Context, incoming *types.TipSet
 
 	// Check if the parents of the from block are in the denylist.
 	// i.e. if a fork of the chain has been requested that we know to be bad.
+	// 如果tipset的父节点是bad，则将tipset添加到bad列表中
 	for _, pcid := range incoming.Parents().Cids() {
 		if reason, ok := syncer.bad.Has(pcid); ok {
 			newReason := reason.Linked("linked to %s", pcid)
@@ -1272,15 +1296,19 @@ func (syncer *Syncer) collectHeaders(ctx context.Context, incoming *types.TipSet
 			return targetBE[i].Round < targetBE[j].Round
 		})
 		if !sorted {
+			// 如果beacon entires的顺序是没有排序的，则将此tipset添加到bad列表中
 			syncer.bad.Add(incoming.Cids()[0], NewBadBlockReason(incoming.Cids(), "wrong order of beacon entires"))
 			return nil, xerrors.Errorf("wrong order of beacon entires")
 		}
 
+		// 判断tipset的beacon内容是否相同
 		for _, bh := range incoming.Blocks()[1:] {
 			if len(targetBE) != len(bh.BeaconEntries) {
+				// tipset各个block header的beacon条目不同
 				// cannot mark bad, I think @Kubuxu
 				return nil, xerrors.Errorf("tipset contained different number for beacon entires")
 			}
+			// 内容是否相同
 			for i, be := range bh.BeaconEntries {
 				if targetBE[i].Round != be.Round || !bytes.Equal(targetBE[i].Data, be.Data) {
 					// cannot mark bad, I think @Kubuxu
@@ -1298,6 +1326,7 @@ func (syncer *Syncer) collectHeaders(ctx context.Context, incoming *types.TipSet
 
 	// we want to sync all the blocks until the height above our
 	// best tipset so far
+	// 目标block高度
 	untilHeight := known.Height() + 1
 
 	ss.SetHeight(blockSet[len(blockSet)-1].Height())
@@ -1305,7 +1334,11 @@ func (syncer *Syncer) collectHeaders(ctx context.Context, incoming *types.TipSet
 	var acceptedBlocks []cid.Cid
 
 loop:
+	// 获取请求block到当前block之间的所有tipset
+	// 如果高度大于目标block高度
 	for blockSet[len(blockSet)-1].Height() > untilHeight {
+		// 如果tipset的父节点是Bad, 则将acceptedBlocks全部加入到bad中
+		// 如果父节点是bad, 则将父节点的所有子节点都加入到bad名单中
 		for _, bc := range at.Cids() {
 			if reason, ok := syncer.bad.Has(bc); ok {
 				newReason := reason.Linked("change contained %s", bc)
@@ -1318,8 +1351,10 @@ loop:
 		}
 
 		// If, for some reason, we have a suffix of the chain locally, handle that here
+		// 获取父节点的tipset
 		ts, err := syncer.store.LoadTipSet(at)
 		if err == nil {
+			// 如果父节点的tipset存在, 则添加到blockSet中
 			acceptedBlocks = append(acceptedBlocks, at.Cids()...)
 
 			blockSet = append(blockSet, ts)
@@ -1333,10 +1368,13 @@ loop:
 		// NB: GetBlocks validates that the blocks are in-fact the ones we
 		// requested, and that they are correctly linked to one another. It does
 		// not validate any state transitions.
+		// 本地没有存储父区块
 		window := 500
+		// 如果当前block的高度减去目标高度小于500, 则window是它们之间的差值
 		if gap := int(blockSet[len(blockSet)-1].Height() - untilHeight); gap < window {
 			window = gap
 		}
+		// ???
 		blks, err := syncer.Exchange.GetBlocks(ctx, at, window)
 		if err != nil {
 			// Most likely our peers aren't fully synced yet, but forwarded
@@ -1360,6 +1398,7 @@ loop:
 		//  `MaxRequestLength` limitation, it should just be able to request
 		//  an segment of arbitrary length. The same burden is put on
 		//  `syncFork()` which needs to be aware this as well.
+		// block是否是连续的
 		if blockSet[len(blockSet)-1].IsChildOf(blks[0]) == false {
 			return nil, xerrors.Errorf("retrieved segments of the chain are not connected at heights %d/%d",
 				blockSet[len(blockSet)-1].Height(), blks[0].Height())
@@ -1368,9 +1407,11 @@ loop:
 		}
 
 		for _, b := range blks {
+			// 如果block的高度小于目标block的高度，则退出循环
 			if b.Height() < untilHeight {
 				break loop
 			}
+			// 判断是否是bad的block
 			for _, bc := range b.Cids() {
 				if reason, ok := syncer.bad.Has(bc); ok {
 					newReason := reason.Linked("change contained %s", bc)
@@ -1390,6 +1431,7 @@ loop:
 		at = blks[len(blks)-1].Parents()
 	}
 
+	// 代码是否是多余的 ?
 	base := blockSet[len(blockSet)-1]
 	if base.Equals(known) {
 		blockSet = blockSet[:len(blockSet)-1]
@@ -1397,6 +1439,7 @@ loop:
 	}
 
 	if base.IsChildOf(known) {
+		// 已经获得了完整的区块, 并且他们是连续的
 		// common case: receiving blocks that are building on top of our best tipset
 		return blockSet, nil
 	}
@@ -1407,16 +1450,19 @@ loop:
 	}
 	if base.IsChildOf(knownParent) {
 		// common case: receiving a block thats potentially part of the same tipset as our best block
+		// 已经获得了完整的区块，并且他们是在相同的tipset中(兄弟区块)
 		return blockSet, nil
 	}
 
 	// We have now ascertained that this is *not* a 'fast forward'
+	// 区块链分叉了
 	log.Warnf("(fork detected) synced header chain (%s - %d) does not link to our best block (%s - %d)", incoming.Cids(), incoming.Height(), known.Cids(), known.Height())
 	fork, err := syncer.syncFork(ctx, base, known)
 	if err != nil {
 		if xerrors.Is(err, ErrForkTooLong) || xerrors.Is(err, ErrForkCheckpoint) {
 			// TODO: we're marking this block bad in the same way that we mark invalid blocks bad. Maybe distinguish?
 			log.Warn("adding forked chain to our bad tipset cache")
+			// 如果是存在太多次分叉或者是在分叉点上，则将新的区块添加到bad列表中
 			for _, b := range incoming.Blocks() {
 				syncer.bad.Add(b.Cid(), NewBadBlockReason(incoming.Cids(), "fork past finality"))
 			}
@@ -1439,7 +1485,7 @@ var ErrForkCheckpoint = fmt.Errorf("fork would require us to diverge from checkp
 // we add the entire subchain to the denylist. Else, we find the common ancestor, and add the missing chain
 // fragment until the fork point to the returned []TipSet.
 func (syncer *Syncer) syncFork(ctx context.Context, incoming *types.TipSet, known *types.TipSet) ([]*types.TipSet, error) {
-
+	// 本地的block是在分叉检查点上
 	chkpt := syncer.GetCheckpoint()
 	if known.Key() == chkpt {
 		return nil, ErrForkCheckpoint
@@ -1447,11 +1493,13 @@ func (syncer *Syncer) syncFork(ctx context.Context, incoming *types.TipSet, know
 
 	// TODO: Does this mean we always ask for ForkLengthThreshold blocks from the network, even if we just need, like, 2? Yes.
 	// Would it not be better to ask in smaller chunks, given that an ~ForkLengthThreshold is very rare?
+	// threshold = 900
 	tips, err := syncer.Exchange.GetBlocks(ctx, incoming.Parents(), int(build.ForkLengthThreshold))
 	if err != nil {
 		return nil, err
 	}
 
+	// 本地block的父区块
 	nts, err := syncer.store.LoadTipSet(known.Parents())
 	if err != nil {
 		return nil, xerrors.Errorf("failed to load next local tipset: %w", err)
@@ -1461,8 +1509,10 @@ func (syncer *Syncer) syncFork(ctx context.Context, incoming *types.TipSet, know
 	// one tipset from `known` (our synced head).
 	forkLengthInHead := 1
 
+	// 获取在分叉区块链中应该被同步的区块
 	for cur := 0; cur < len(tips); {
 		if nts.Height() == 0 {
+			// 在创世块都分叉了
 			if !syncer.Genesis.Equals(nts) {
 				return nil, xerrors.Errorf("somehow synced chain that linked back to a different genesis (bad genesis: %s)", nts.Key())
 			}
@@ -1474,6 +1524,7 @@ func (syncer *Syncer) syncFork(ctx context.Context, incoming *types.TipSet, know
 		}
 
 		if nts.Height() < tips[cur].Height() {
+			// 找到相同高度的block
 			cur++
 		} else {
 			// Walk back one block in our synced chain to try to meet the fork's
@@ -1524,12 +1575,16 @@ func (syncer *Syncer) iterFullTipsets(ctx context.Context, headers []*types.TipS
 
 	span.AddAttributes(trace.Int64Attribute("num_headers", int64(len(headers))))
 
+	// headers中是按高度的降序排列的
+	// 从区块高度低的到区块高度高的
 	for i := len(headers) - 1; i >= 0; {
 		fts, err := syncer.store.TryFillTipSet(headers[i])
 		if err != nil {
 			return err
 		}
 		if fts != nil {
+			// 验证tipset
+			// 本地已经存储了，为什么还需要验证 ??
 			if err := cb(ctx, fts); err != nil {
 				return err
 			}
@@ -1537,11 +1592,13 @@ func (syncer *Syncer) iterFullTipsets(ctx context.Context, headers []*types.TipS
 			continue
 		}
 
+		// 16 * 8
 		batchSize := concurrentSyncRequests * syncRequestBatchSize
 		if i < batchSize {
 			batchSize = i + 1
 		}
 
+		// 没有找到相应的tipset消息体，则从网络获取
 		ss.SetStage(api.StageFetchingMessages)
 		startOffset := i + 1 - batchSize
 		bstout, batchErr := syncer.fetchMessages(ctx, headers[startOffset:startOffset+batchSize], startOffset)
@@ -1556,6 +1613,7 @@ func (syncer *Syncer) iterFullTipsets(ctx context.Context, headers []*types.TipS
 			bs := bstore.NewMemory()
 			blks := cbor.NewCborStore(bs)
 
+			// 构建完整的full tipset
 			this := headers[i-bsi]
 			bstip := bstout[len(bstout)-(bsi+1)]
 			fts, err := zipTipSetAndMessages(blks, this, bstip.Bls, bstip.Secpk, bstip.BlsIncludes, bstip.SecpkIncludes)
@@ -1570,6 +1628,7 @@ func (syncer *Syncer) iterFullTipsets(ctx context.Context, headers []*types.TipS
 				return err
 			}
 
+			// 先把消息体放到内存中，然后在持久化到磁盘
 			if err := persistMessages(ctx, bs, bstip); err != nil {
 				return err
 			}
@@ -1595,11 +1654,13 @@ func (syncer *Syncer) fetchMessages(ctx context.Context, headers []*types.TipSet
 
 	start := build.Clock.Now()
 
+	// 开启多个协程获取消息
 	for j := 0; j < batchSize; j += syncRequestBatchSize {
 		wg.Add(1)
 		go func(j int) {
 			defer wg.Done()
 
+			// 请求的个数, 最多是8个
 			nreq := syncRequestBatchSize
 			if j+nreq > batchSize {
 				nreq = batchSize - j
@@ -1612,6 +1673,7 @@ func (syncer *Syncer) fetchMessages(ctx context.Context, headers []*types.TipSet
 
 				var requestErr error
 				var requestResult []*exchange.CompactedMessages
+				// 失败可以重试5次
 				for retry := 0; requestResult == nil && retry < syncRequestRetries; retry++ {
 					if retry > 0 {
 						log.Infof("fetching messages at %d (retry %d)", startOffset+nextI, retry)
@@ -1619,6 +1681,7 @@ func (syncer *Syncer) fetchMessages(ctx context.Context, headers []*types.TipSet
 						log.Infof("fetching messages at %d", startOffset+nextI)
 					}
 
+					// 获取消息
 					result, err := syncer.Exchange.GetChainMessages(ctx, headers[nextI:lastI])
 					if err != nil {
 						requestErr = multierror.Append(requestErr, err)
@@ -1651,6 +1714,7 @@ func (syncer *Syncer) fetchMessages(ctx context.Context, headers []*types.TipSet
 	return batch, nil
 }
 
+// 持久化消息
 func persistMessages(ctx context.Context, bs bstore.Blockstore, bst *exchange.CompactedMessages) error {
 	_, span := trace.StartSpan(ctx, "persistMessages")
 	defer span.End()
@@ -1700,8 +1764,10 @@ func (syncer *Syncer) collectChain(ctx context.Context, ts *types.TipSet, hts *t
 	defer span.End()
 	ss := extractSyncState(ctx)
 
+	// 初始化syncState
 	ss.Init(hts, ts)
 
+	// 获取需要被同步的区块头
 	headers, err := syncer.collectHeaders(ctx, ts, hts)
 	if err != nil {
 		ss.Error(err)
@@ -1710,12 +1776,15 @@ func (syncer *Syncer) collectChain(ctx context.Context, ts *types.TipSet, hts *t
 
 	span.AddAttributes(trace.Int64Attribute("syncChainLength", int64(len(headers))))
 
+	// 代码感觉没有用处 ??
 	if !headers[0].Equals(ts) {
 		log.Errorf("collectChain headers[0] should be equal to sync target. Its not: %s != %s", headers[0].Cids(), ts.Cids())
 	}
 
 	ss.SetStage(api.StagePersistHeaders)
 
+	// blocksPerEpoch = 5
+	// 持久化区块头
 	toPersist := make([]*types.BlockHeader, 0, len(headers)*int(build.BlocksPerEpoch))
 	for _, ts := range headers {
 		toPersist = append(toPersist, ts.Blocks()...)
@@ -1795,6 +1864,7 @@ func (syncer *Syncer) IsEpochBeyondCurrMax(epoch abi.ChainEpoch) bool {
 		return false
 	}
 
+	// block的height是否大于真是的高度
 	now := uint64(build.Clock.Now().Unix())
 	return epoch > (abi.ChainEpoch((now-syncer.Genesis.MinTimestamp())/build.BlockDelaySecs) + MaxHeightDrift)
 }

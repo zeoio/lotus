@@ -197,11 +197,13 @@ func (sm *syncManager) handlePeerHead(head peerHead) {
 	log.Debugf("new peer head: %s %s", head.p, head.ts)
 
 	// have we started syncing yet?
+	// 还没有开始同步
 	if sm.nextWorker == 0 {
 		// track the peer head until we start syncing
 		sm.heads[head.p] = head.ts
 
 		// not yet; do we have enough peers?
+		// 如果peer的个数小于4
 		if len(sm.heads) < BootstrapPeerThreshold {
 			log.Debugw("not tracking enough peers to start sync worker", "have", len(sm.heads), "need", BootstrapPeerThreshold)
 			// not enough peers; track it and wait
@@ -237,6 +239,7 @@ func (sm *syncManager) handlePeerHead(head peerHead) {
 func (sm *syncManager) handleWorkerStatus(status workerStatus) {
 	log.Debugf("worker %d done; status error: %s", status.id, status.err)
 
+	// 删除相应的state
 	sm.mx.Lock()
 	ws := sm.state[status.id]
 	delete(sm.state, status.id)
@@ -253,8 +256,10 @@ func (sm *syncManager) handleWorkerStatus(status workerStatus) {
 		log.Errorf("error during sync in %s: %s", ws.ts, status.err)
 	} else {
 		// add to the recently synced buffer
+		// 同步成功，添加到recent中
 		sm.recent.Push(ws.ts)
 		// if we are still in initial sync and this was fast enough, mark the end of the initial sync
+		// 如果还是在初始化同步中，并且本次同步的耗时小于15min, 则标记初始化同步完成
 		if !sm.initialSyncDone && ws.dt < InitialSyncTimeThreshold {
 			sm.initialSyncDone = true
 		}
@@ -328,6 +333,7 @@ func (sm *syncManager) worker(ws *workerState) {
 
 // selects the initial sync target by examining known peer heads; only called once for the initial
 // sync.
+// 选择最重的tipset
 func (sm *syncManager) selectInitialSyncTarget() (*types.TipSet, error) {
 	var buckets syncBucketSet
 
@@ -347,6 +353,7 @@ func (sm *syncManager) selectInitialSyncTarget() (*types.TipSet, error) {
 	}
 
 	if len(buckets.buckets) > 1 {
+		// 有不同的chain
 		log.Warn("caution, multiple distinct chains seen during head selections")
 		// TODO: we *could* refuse to sync here without user intervention.
 		// For now, just select the best cluster
@@ -365,12 +372,14 @@ func (sm *syncManager) addSyncTarget(ts *types.TipSet) (*types.TipSet, bool, err
 	// if we have recently synced this or any heavier tipset we just ignore it; this can happen
 	// with an empty worker set after we just finished syncing to a target
 	if sm.recent.Synced(ts) {
+		// 已经同步了或者权重比较小
 		return nil, false, nil
 	}
 
 	// if the worker set is empty, we have finished syncing and were waiting for the next tipset
 	// in this case, we just return the tipset as work to be done
 	if len(sm.state) == 0 {
+		// 没有同步任务, 则开始同步
 		return ts, true, nil
 	}
 
@@ -378,9 +387,11 @@ func (sm *syncManager) addSyncTarget(ts *types.TipSet) (*types.TipSet, bool, err
 	for _, ws := range sm.state {
 		if ts.Equals(ws.ts) {
 			// ignore it, we are already syncing it
+			// 已经存在
 			return nil, false, nil
 		}
 
+		// tipset是子节点
 		if ts.Parents() == ws.ts.Key() {
 			// schedule for syncing next; it's an extension of an active sync
 			sm.pend.Insert(ts)
@@ -390,6 +401,7 @@ func (sm *syncManager) addSyncTarget(ts *types.TipSet) (*types.TipSet, bool, err
 
 	// check to see if it is related to any pending sync; if so insert it into the pending sync queue
 	if sm.pend.RelatedToAny(ts) {
+		// 在相同的链上
 		sm.pend.Insert(ts)
 		return nil, false, nil
 	}
@@ -398,11 +410,13 @@ func (sm *syncManager) addSyncTarget(ts *types.TipSet) (*types.TipSet, bool, err
 	// start a new worker to sync it, if it is *heavier* than any active or pending set;
 	// if it is not, we ignore it.
 	for _, ws := range sm.state {
+		// 判断tipset的权重是否小于当前的tipset
 		if isHeavier(ws.ts, ts) {
 			return nil, false, nil
 		}
 	}
 
+	// 判断pend的权重是否大于tipset
 	pendHeaviest := sm.pend.Heaviest()
 	if pendHeaviest != nil && isHeavier(pendHeaviest, ts) {
 		return nil, false, nil
@@ -411,6 +425,7 @@ func (sm *syncManager) addSyncTarget(ts *types.TipSet) (*types.TipSet, bool, err
 	// if we have not finished the initial sync or have too many workers, add it to the deferred queue;
 	// it will be processed once a worker is freed from syncing a chain (or the initial sync finishes)
 	if !sm.initialSyncDone || len(sm.state) >= MaxSyncWorkers {
+		// 如果初始同步没有完成，或者同步的worker太多，则将tipset添加到defer队列中
 		log.Debugf("deferring sync on %s", ts)
 		sm.deferred.Insert(ts)
 		return nil, false, nil
@@ -427,21 +442,25 @@ func (sm *syncManager) selectSyncTarget(done *types.TipSet) (*types.TipSet, bool
 	// if we are not already working on a heavier tipset
 	related := sm.pend.PopRelated(done)
 	if related == nil {
+		// 如果没有相关的tipset, 则在defer队列中选择
 		return sm.selectDeferredSyncTarget()
 	}
 
 	heaviest := related.heaviestTipSet()
 	if isHeavier(done, heaviest) {
+		// 权重比最近同步的要低
 		return sm.selectDeferredSyncTarget()
 	}
 
 	for _, ws := range sm.state {
 		if isHeavier(ws.ts, heaviest) {
+			// 权重比在同步中的tipset要低
 			return sm.selectDeferredSyncTarget()
 		}
 	}
 
 	if sm.recent.Synced(heaviest) {
+		// 已经同步了
 		return sm.selectDeferredSyncTarget()
 	}
 
@@ -450,6 +469,7 @@ func (sm *syncManager) selectSyncTarget(done *types.TipSet) (*types.TipSet, bool
 
 // selects a deferred sync target if there is any; these are sync targets that were not related to
 // active syncs and were deferred because there were too many workers running
+// 选择一个在defer队列中的tipset
 func (sm *syncManager) selectDeferredSyncTarget() (*types.TipSet, bool, error) {
 deferredLoop:
 	for !sm.deferred.Empty() {
@@ -458,6 +478,7 @@ deferredLoop:
 
 		if sm.recent.Synced(heaviest) {
 			// we have synced it or something heavier recently, skip it
+			// 已经同步
 			continue deferredLoop
 		}
 
@@ -548,6 +569,7 @@ func (sbs *syncBucketSet) String() string {
 	return "{" + strings.Join(bStrings, ";") + "}"
 }
 
+// 判断tipset是否在相同的链上
 func (sbs *syncBucketSet) RelatedToAny(ts *types.TipSet) bool {
 	for _, b := range sbs.buckets {
 		if b.sameChainAs(ts) {
@@ -559,14 +581,17 @@ func (sbs *syncBucketSet) RelatedToAny(ts *types.TipSet) bool {
 
 func (sbs *syncBucketSet) Insert(ts *types.TipSet) {
 	for _, b := range sbs.buckets {
+		// tipset在相同的链上
 		if b.sameChainAs(ts) {
 			b.add(ts)
 			return
 		}
 	}
+	// 不在相同的链上，则新建一个bucket
 	sbs.buckets = append(sbs.buckets, newSyncTargetBucket(ts))
 }
 
+// 选择权重最大的bucket
 func (sbs *syncBucketSet) Pop() *syncTargetBucket {
 	var bestBuck *syncTargetBucket
 	var bestTs *types.TipSet
@@ -583,6 +608,7 @@ func (sbs *syncBucketSet) Pop() *syncTargetBucket {
 	return bestBuck
 }
 
+// 删除指定的bucket
 func (sbs *syncBucketSet) removeBucket(toremove *syncTargetBucket) {
 	nbuckets := make([]*syncTargetBucket, 0, len(sbs.buckets)-1)
 	for _, b := range sbs.buckets {
@@ -593,6 +619,7 @@ func (sbs *syncBucketSet) removeBucket(toremove *syncTargetBucket) {
 	sbs.buckets = nbuckets
 }
 
+// 弹出在同一条链上的tipset
 func (sbs *syncBucketSet) PopRelated(ts *types.TipSet) *syncTargetBucket {
 	var bOut *syncTargetBucket
 	for _, b := range sbs.buckets {
@@ -607,6 +634,7 @@ func (sbs *syncBucketSet) PopRelated(ts *types.TipSet) *syncTargetBucket {
 	return bOut
 }
 
+// 获得bucketSet中最重的tipset
 func (sbs *syncBucketSet) Heaviest() *types.TipSet {
 	// TODO: should also consider factoring in number of peers represented by each bucket here
 	var bestTs *types.TipSet
@@ -623,14 +651,18 @@ func (sbs *syncBucketSet) Empty() bool {
 	return len(sbs.buckets) == 0
 }
 
+// 判断tipset是否在相同的链上
 func (stb *syncTargetBucket) sameChainAs(ts *types.TipSet) bool {
 	for _, t := range stb.tips {
+		// 相等
 		if ts.Equals(t) {
 			return true
 		}
+		// 是tipset的父节点
 		if ts.Key() == t.Parents() {
 			return true
 		}
+		// 是tipset的子节点
 		if ts.Parents() == t.Key() {
 			return true
 		}
@@ -641,6 +673,7 @@ func (stb *syncTargetBucket) sameChainAs(ts *types.TipSet) bool {
 func (stb *syncTargetBucket) add(ts *types.TipSet) {
 	for i, t := range stb.tips {
 		if t.Equals(ts) {
+			// 已经存在
 			return
 		}
 		if coalesceTipsets && t.Height() == ts.Height() &&
@@ -676,6 +709,7 @@ func (stb *syncTargetBucket) add(ts *types.TipSet) {
 	stb.tips = append(stb.tips, ts)
 }
 
+// 获得bucket中最大的权重
 func (stb *syncTargetBucket) heaviestTipSet() *types.TipSet {
 	if stb == nil {
 		return nil

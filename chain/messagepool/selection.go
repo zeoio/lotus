@@ -58,6 +58,7 @@ func (mp *MessagePool) SelectMessages(ts *types.TipSet, tq float64) (msgs []*typ
 		return nil, err
 	}
 
+	// 一个区块最多只能容纳16000个交易
 	if len(msgs) > MaxBlockMessages {
 		msgs = msgs[:MaxBlockMessages]
 	}

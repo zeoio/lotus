@@ -105,6 +105,7 @@ type StorageAuth http.Header
 type WorkerStateStore *statestore.StateStore
 type ManagerStateStore *statestore.StateStore
 
+// seal worker
 func New(ctx context.Context, ls stores.LocalStorage, si stores.SectorIndex, sc SealerConfig, urls URLs, sa StorageAuth, wss WorkerStateStore, mss ManagerStateStore) (*Manager, error) {
 	lstor, err := stores.NewLocal(ctx, ls, si, urls)
 	if err != nil {

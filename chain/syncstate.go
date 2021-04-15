@@ -66,6 +66,7 @@ func (ss *SyncerState) SetHeight(h abi.ChainEpoch) {
 	ss.data.Height = h
 }
 
+// 设置同步出错时的state
 func (ss *SyncerState) Error(err error) {
 	if ss == nil {
 		return

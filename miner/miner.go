@@ -60,7 +60,7 @@ func NewMiner(api api.FullNode, epp gen.WinningPoStProver, addr address.Address,
 		address: addr,
 		waitFunc: func(ctx context.Context, baseTime uint64) (func(bool, abi.ChainEpoch, error), abi.ChainEpoch, error) {
 			// Wait around for half the block time in case other parents come in
-			deadline := baseTime + build.PropagationDelaySecs
+			deadline := baseTime + build.PropagationDelaySecs // baseTime + 6s
 			baseT := time.Unix(int64(deadline), 0)
 
 			baseT = baseT.Add(randTimeOffset(time.Second))
@@ -149,6 +149,8 @@ func (m *Miner) mine(ctx context.Context) {
 	ctx, span := trace.StartSpan(ctx, "/mine")
 	defer span.End()
 
+	// 检查winPoSt是否可用, 不可用就打印错误信息
+	// 这个协程好像没啥用处
 	go m.doWinPoStWarmup(ctx)
 
 	var lastBase MiningBase
@@ -169,6 +171,7 @@ minerLoop:
 		var onDone func(bool, abi.ChainEpoch, error)
 		var injectNulls abi.ChainEpoch
 
+		// 等待区块同步，使tipset保持最新
 		for {
 			prebase, err := m.GetBestMiningCandidate(ctx)
 			if err != nil {
@@ -179,6 +182,7 @@ minerLoop:
 				continue
 			}
 
+			// tipset高度相同， 则退出
 			if base != nil && base.TipSet.Height() == prebase.TipSet.Height() && base.NullRounds == prebase.NullRounds {
 				base = prebase
 				break
@@ -195,6 +199,8 @@ minerLoop:
 			// best mining candidate at that time.
 
 			// Wait until propagation delay period after block we plan to mine on
+			// 休眠一定时间
+			// onDone是空函数, injectNulls是0
 			onDone, injectNulls, err = m.waitFunc(ctx, prebase.TipSet.MinTimestamp())
 			if err != nil {
 				log.Error(err)
@@ -202,6 +208,7 @@ minerLoop:
 			}
 
 			// just wait for the beacon entry to become available before we select our final mining base
+			// 阻塞等待 (当前区块高度 + NullRounds + 1)的条目
 			_, err = m.api.BeaconGetEntry(ctx, prebase.TipSet.Height()+prebase.NullRounds+1)
 			if err != nil {
 				log.Errorf("failed getting beacon entry: %s", err)
@@ -216,8 +223,10 @@ minerLoop:
 
 		base.NullRounds += injectNulls // testing
 
+		// 如果tipset是之前的则跳过
 		if base.TipSet.Equals(lastBase.TipSet) && lastBase.NullRounds == base.NullRounds {
 			log.Warnf("BestMiningCandidate from the previous round: %s (nulls:%d)", lastBase.TipSet.Cids(), lastBase.NullRounds)
+			// 休眠30s
 			if !m.niceSleep(time.Duration(build.BlockDelaySecs) * time.Second) {
 				continue minerLoop
 			}
@@ -252,6 +261,7 @@ minerLoop:
 				}
 			})
 
+			// 检查区块时间
 			btime := time.Unix(int64(b.Header.Timestamp), 0)
 			now := build.Clock.Now()
 			switch {
@@ -267,6 +277,7 @@ minerLoop:
 					"block-time", btime, "time", build.Clock.Now(), "difference", build.Clock.Since(btime))
 			}
 
+			// 检查区块是否合格
 			if err := m.sf.MinedBlock(b.Header, base.TipSet.Height()+base.NullRounds); err != nil {
 				log.Errorf("<!!> SLASH FILTER ERROR: %s", err)
 				continue
@@ -284,12 +295,14 @@ minerLoop:
 				log.Errorf("failed to submit newly mined block: %+v", err)
 			}
 		} else {
+			// 空块个数+1
 			base.NullRounds++
 
 			// Wait until the next epoch, plus the propagation delay, so a new tipset
 			// has enough time to form.
 			//
 			// See:  https://github.com/filecoin-project/lotus/issues/1845
+			// 延迟多少s, tipset时间 + 空块个数*30 + 6
 			nextRound := time.Unix(int64(base.TipSet.MinTimestamp()+build.BlockDelaySecs*uint64(base.NullRounds))+int64(build.PropagationDelaySecs), 0)
 
 			select {
@@ -310,6 +323,7 @@ type MiningBase struct {
 	NullRounds abi.ChainEpoch
 }
 
+// 获取最新的tipset
 func (m *Miner) GetBestMiningCandidate(ctx context.Context) (*MiningBase, error) {
 	m.lk.Lock()
 	defer m.lk.Unlock()
@@ -357,6 +371,7 @@ func (m *Miner) mineOne(ctx context.Context, base *MiningBase) (*types.BlockMsg,
 	log.Debugw("attempting to mine a block", "tipset", types.LogCids(base.TipSet.Cids()))
 	start := build.Clock.Now()
 
+	// 回合数 + 1 + NullRound
 	round := base.TipSet.Height() + base.NullRounds + 1
 
 	mbi, err := m.api.MinerGetBaseInfo(ctx, m.address, round, base.TipSet.Key())
@@ -366,6 +381,7 @@ func (m *Miner) mineOne(ctx context.Context, base *MiningBase) (*types.BlockMsg,
 	if mbi == nil {
 		return nil, nil
 	}
+	// miner是否合格
 	if !mbi.EligibleForMining {
 		// slashed or just have no power yet
 		return nil, nil
@@ -382,11 +398,13 @@ func (m *Miner) mineOne(ctx context.Context, base *MiningBase) (*types.BlockMsg,
 
 	log.Infof("Time delta between now and our mining base: %ds (nulls: %d)", uint64(build.Clock.Now().Unix())-base.TipSet.MinTimestamp(), base.NullRounds)
 
+	// 随机数条目
 	rbase := beaconPrev
 	if len(bvals) > 0 {
 		rbase = bvals[len(bvals)-1]
 	}
 
+	// 计算票，变量是rbase
 	ticket, err := m.computeTicket(ctx, &rbase, base, mbi)
 	if err != nil {
 		return nil, xerrors.Errorf("scratching ticket failed: %w", err)
@@ -408,6 +426,7 @@ func (m *Miner) mineOne(ctx context.Context, base *MiningBase) (*types.BlockMsg,
 		return nil, xerrors.Errorf("failed to marshal miner address: %w", err)
 	}
 
+	// winningPoSt的hash
 	rand, err := store.DrawRandomness(rbase.Data, crypto.DomainSeparationTag_WinningPoStChallengeSeed, round, buf.Bytes())
 	if err != nil {
 		return nil, xerrors.Errorf("failed to get randomness for winning post: %w", err)
@@ -466,16 +485,19 @@ func (m *Miner) computeTicket(ctx context.Context, brand *types.BeaconEntry, bas
 		return nil, xerrors.Errorf("failed to marshal address to cbor: %w", err)
 	}
 
+	// 回合数+1 > 51000, 则追加base.tipset中最小的ticket
 	round := base.TipSet.Height() + base.NullRounds + 1
 	if round > build.UpgradeSmokeHeight {
 		buf.Write(base.TipSet.MinTicket().VRFProof)
 	}
 
+	// hash
 	input, err := store.DrawRandomness(brand.Data, crypto.DomainSeparationTag_TicketProduction, round-build.TicketRandomnessLookback, buf.Bytes())
 	if err != nil {
 		return nil, err
 	}
 
+	// 对input进行签名
 	vrfOut, err := gen.ComputeVRF(ctx, m.api.WalletSign, mbi.WorkerKey, input)
 	if err != nil {
 		return nil, err

@@ -20,6 +20,7 @@ type Response struct {
 
 type Schedule []BeaconPoint
 
+// 获得这个epoch对应的beacon
 func (bs Schedule) BeaconForEpoch(e abi.ChainEpoch) RandomBeacon {
 	for i := len(bs) - 1; i >= 0; i-- {
 		bp := bs[i]

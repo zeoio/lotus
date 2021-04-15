@@ -141,6 +141,7 @@ func HandleIncomingBlocks(mctx helpers.MetricsCtx, lc fx.Lifecycle, ps *pubsub.P
 	v := sub.NewBlockValidator(
 		h.ID(), chain, stmgr,
 		func(p peer.ID) {
+			// 加入黑名单
 			ps.BlacklistPeer(p)
 			h.ConnManager().TagPeer(p, "badblock", -1000)
 		})
@@ -151,6 +152,7 @@ func HandleIncomingBlocks(mctx helpers.MetricsCtx, lc fx.Lifecycle, ps *pubsub.P
 
 	log.Infof("subscribing to pubsub topic %s", build.BlocksTopic(nn))
 
+	// 订阅block事件
 	blocksub, err := ps.Subscribe(build.BlocksTopic(nn)) //nolint
 	if err != nil {
 		panic(err)
@@ -219,6 +221,7 @@ func BuiltinDrandConfig() dtypes.DrandSchedule {
 }
 
 func RandomSchedule(p RandomBeaconParams, _ dtypes.AfterGenesisSet) (beacon.Schedule, error) {
+	// 获取创世block header
 	gen, err := p.Cs.GetGenesis()
 	if err != nil {
 		return nil, err

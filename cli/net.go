@@ -187,8 +187,10 @@ var netConnect = &cli.Command{
 		defer closer()
 		ctx := ReqContext(cctx)
 
+		// 解析地址
 		pis, err := addrutil.ParseAddresses(ctx, cctx.Args().Slice())
 		if err != nil {
+			// 获取miner的地址信息
 			a, perr := address.NewFromString(cctx.Args().First())
 			if perr != nil {
 				return err

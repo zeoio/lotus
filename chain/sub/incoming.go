@@ -48,6 +48,7 @@ var msgCidPrefix = cid.Prefix{
 func HandleIncomingBlocks(ctx context.Context, bsub *pubsub.Subscription, s *chain.Syncer, bs bserv.BlockService, cmgr connmgr.ConnManager) {
 	// Timeout after (block time + propagation delay). This is useless at
 	// this point.
+	// 36s
 	timeout := time.Duration(build.BlockDelaySecs+build.PropagationDelaySecs) * time.Second
 
 	for {
@@ -70,6 +71,7 @@ func HandleIncomingBlocks(ctx context.Context, bsub *pubsub.Subscription, s *cha
 		src := msg.GetFrom()
 
 		go func() {
+			// timeout 36s
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
@@ -77,6 +79,7 @@ func HandleIncomingBlocks(ctx context.Context, bsub *pubsub.Subscription, s *cha
 			// all requests but that may have other consequences.
 			ses := bserv.NewSession(ctx, bs)
 
+			// 获取block的消息
 			start := build.Clock.Now()
 			log.Debug("about to fetch messages for block from pubsub")
 			bmsgs, err := FetchMessagesByCids(ctx, ses, blk.BlsMessages)
@@ -94,9 +97,11 @@ func HandleIncomingBlocks(ctx context.Context, bsub *pubsub.Subscription, s *cha
 			took := build.Clock.Since(start)
 			log.Debugw("new block over pubsub", "cid", blk.Header.Cid(), "source", msg.GetFrom(), "msgfetch", took)
 			if took > 3*time.Second {
+				// 如果获取消息的时间大于3s
 				log.Warnw("Slow msg fetch", "cid", blk.Header.Cid(), "source", msg.GetFrom(), "msgfetch", took)
 			}
 			if delay := build.Clock.Now().Unix() - int64(blk.Header.Timestamp); delay > 5 {
+				// 如果延迟时间超过5s
 				_ = stats.RecordWithTags(ctx,
 					[]tag.Mutator{tag.Insert(metrics.MinerID, blk.Header.Miner.String())},
 					metrics.BlockDelay.M(delay),
@@ -104,6 +109,7 @@ func HandleIncomingBlocks(ctx context.Context, bsub *pubsub.Subscription, s *cha
 				log.Warnw("received block with large delay from miner", "block", blk.Cid(), "delay", delay, "miner", blk.Header.Miner)
 			}
 
+			// 通知新的block
 			if s.InformNewBlock(msg.ReceivedFrom, &types.FullBlock{
 				Header:        blk.Header,
 				BlsMessages:   bmsgs,
@@ -181,10 +187,12 @@ func fetchCids(
 		}
 		cidIndex[c] = i
 	}
+	// 检查是否有重复的消息
 	if len(cids) != len(cidIndex) {
 		return fmt.Errorf("duplicate CIDs in fetchCids input")
 	}
 
+	// 获取消息
 	for block := range bserv.GetBlocks(ctx, cids) {
 		ix, ok := cidIndex[block.Cid()]
 		if !ok {
@@ -202,6 +210,7 @@ func fetchCids(
 		}
 	}
 
+	// 是否有剩余的消息没有获取
 	if len(cidIndex) > 0 {
 		err := ctx.Err()
 		if err == nil {
@@ -251,6 +260,7 @@ func (bv *BlockValidator) flagPeer(p peer.ID) {
 
 	val := v.(int)
 
+	// 大于10次，则加入黑名单中
 	if val >= bv.killThresh {
 		log.Warnf("blacklisting peer %s", p)
 		bv.blacklist(p)
@@ -262,6 +272,7 @@ func (bv *BlockValidator) flagPeer(p peer.ID) {
 
 func (bv *BlockValidator) Validate(ctx context.Context, pid peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
 	if pid == bv.self {
+		// 如果是本地消息
 		return bv.validateLocalBlock(ctx, msg)
 	}
 
@@ -275,9 +286,11 @@ func (bv *BlockValidator) Validate(ctx context.Context, pid peer.ID, msg *pubsub
 
 	recordFailureFlagPeer := func(what string) {
 		recordFailure(ctx, metrics.BlockValidationFailure, what)
+		// 失败次数大于10次，则加入黑名单中
 		bv.flagPeer(pid)
 	}
 
+	// 检查block的消息个数，和是否有签名
 	blk, what, err := bv.decodeAndCheckBlock(msg)
 	if err != nil {
 		log.Error("got invalid block over pubsub: ", err)
@@ -286,6 +299,7 @@ func (bv *BlockValidator) Validate(ctx context.Context, pid peer.ID, msg *pubsub
 	}
 
 	// validate the block meta: the Message CID in the header must match the included messages
+	// 验证block的消息是否一致
 	err = bv.validateMsgMeta(ctx, blk)
 	if err != nil {
 		log.Warnf("error validating message metadata: %s", err)
@@ -300,6 +314,7 @@ func (bv *BlockValidator) Validate(ctx context.Context, pid peer.ID, msg *pubsub
 	// if we can't find it, we check whether we are (near) synced in the chain.
 	// if we are not synced we cannot validate the block and we must ignore it.
 	// if we are synced and the miner is unknown, then the block is rejcected.
+	// 检查block的miner是否有出块权利， 并且返回miner的公钥
 	key, err := bv.checkPowerAndGetWorkerKey(ctx, blk.Header)
 	if err != nil {
 		if err != ErrSoftFailure && bv.isChainNearSynced() {
@@ -308,10 +323,12 @@ func (bv *BlockValidator) Validate(ctx context.Context, pid peer.ID, msg *pubsub
 			return pubsub.ValidationReject
 		}
 
+		// 可能block不是最新的
 		log.Warnf("cannot validate block message; unknown miner or miner that doesn't meet min power in unsynced chain")
 		return pubsub.ValidationIgnore
 	}
 
+	// 检查block的签名
 	err = sigs.CheckBlockSignature(ctx, blk.Header, key)
 	if err != nil {
 		log.Errorf("block signature verification failed: %s", err)
@@ -319,6 +336,7 @@ func (bv *BlockValidator) Validate(ctx context.Context, pid peer.ID, msg *pubsub
 		return pubsub.ValidationReject
 	}
 
+	// 这个block是否赢得了出块权
 	if blk.Header.ElectionProof.WinCount < 1 {
 		log.Errorf("block is not claiming to be winning")
 		recordFailureFlagPeer("not_winning")
@@ -326,6 +344,8 @@ func (bv *BlockValidator) Validate(ctx context.Context, pid peer.ID, msg *pubsub
 	}
 
 	// it's a good block! make sure we've only seen it once
+	// 是否已经接受过这个block
+	// 可以在开始的时候get验证是否已经存在 ?
 	if bv.recvBlocks.add(blk.Header.Cid()) > 0 {
 		// TODO: once these changes propagate to the network, we can consider
 		// dropping peers who send us the same block multiple times
@@ -341,6 +361,7 @@ func (bv *BlockValidator) Validate(ctx context.Context, pid peer.ID, msg *pubsub
 func (bv *BlockValidator) validateLocalBlock(ctx context.Context, msg *pubsub.Message) pubsub.ValidationResult {
 	stats.Record(ctx, metrics.BlockPublished.M(1))
 
+	// 检查Block的大小
 	if size := msg.Size(); size > 1<<20-1<<15 {
 		log.Errorf("ignoring oversize block (%dB)", size)
 		recordFailure(ctx, metrics.BlockValidationFailure, "oversize_block")
@@ -354,6 +375,7 @@ func (bv *BlockValidator) validateLocalBlock(ctx context.Context, msg *pubsub.Me
 		return pubsub.ValidationIgnore
 	}
 
+	// 这个Block是否已经被接受了
 	if count := bv.recvBlocks.add(blk.Header.Cid()); count > 0 {
 		log.Warnf("local block has been seen %d times; ignoring", count)
 		return pubsub.ValidationIgnore
@@ -370,11 +392,13 @@ func (bv *BlockValidator) decodeAndCheckBlock(msg *pubsub.Message) (*types.Block
 		return nil, "invalid", xerrors.Errorf("error decoding block: %w", err)
 	}
 
+	// block包含的消息不能大于10000个
 	if count := len(blk.BlsMessages) + len(blk.SecpkMessages); count > build.BlockMessageLimit {
 		return nil, "too_many_messages", fmt.Errorf("block contains too many messages (%d)", count)
 	}
 
 	// make sure we have a signature
+	// block是否有签名
 	if blk.Header.BlockSig == nil {
 		return nil, "missing_signature", fmt.Errorf("block without a signature")
 	}
@@ -389,6 +413,7 @@ func (bv *BlockValidator) isChainNearSynced() bool {
 	return build.Clock.Since(timestampTime) < 6*time.Hour
 }
 
+// 检查block中的消息和block header是否一致
 func (bv *BlockValidator) validateMsgMeta(ctx context.Context, msg *types.BlockMsg) error {
 	// TODO there has to be a simpler way to do this without the blockstore dance
 	// block headers use adt0
@@ -456,6 +481,7 @@ func (bv *BlockValidator) checkPowerAndGetWorkerKey(ctx context.Context, bh *typ
 	// tipset - 1 for historical reasons. DO NOT use the lookback state
 	// returned by GetLookbackTipSetForRound.
 
+	// 检查miner是否有资格出块
 	eligible, err := stmgr.MinerEligibleToMine(ctx, bv.stmgr, bh.Miner, baseTs, lbts)
 	if err != nil {
 		log.Warnf("failed to determine if incoming block's miner has minimum power: %s", err)
